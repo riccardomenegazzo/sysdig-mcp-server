@@ -176,6 +176,19 @@ var _ = Describe("McpHandler", func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 		}, NodeTimeout(5*time.Second))
 
+		It("does not apply legacy session ownership to the 2026-07-28 protocol", func(ctx SpecContext) {
+			modernClient := NewHTTPTestClient(handler.AsStreamableHTTP("/", false, remoteSecurity(verifier)))
+			headers := authorizationHeaders()
+			headers.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
+			headers.Set(mcp.HeaderMethod, string(mcp.MethodPing))
+			headers.Set(mcp.HeaderSessionID, "stale-session-id")
+
+			resp := modernClient.RPC(ctx, "ping", nil, headers)
+			defer func() { _ = resp.Body.Close() }()
+
+			Expect(resp.StatusCode).NotTo(Equal(http.StatusNotFound))
+		}, NodeTimeout(5*time.Second))
+
 		DescribeTable("rejects invalid authorization headers",
 			func(headers http.Header) {
 				resp := testClient.RPC(context.Background(), "tools/list", nil, headers)
@@ -372,6 +385,17 @@ var _ = Describe("McpHandler", func() {
 			defer func() { _ = resp.Body.Close() }()
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 			Expect(resp.Header.Get("Mcp-Session-Id")).To(BeEmpty())
+		}, NodeTimeout(5*time.Second))
+
+		It("ignores legacy session IDs in explicit stateless mode", func(ctx SpecContext) {
+			statelessClient := NewHTTPTestClient(handler.AsStreamableHTTP("/", true, remoteSecurity(verifier)))
+			headers := authorizationHeaders()
+			headers.Set(mcp.HeaderSessionID, "not-a-valid-session")
+
+			resp := statelessClient.RPC(ctx, "ping", nil, headers)
+			defer func() { _ = resp.Body.Close() }()
+
+			Expect(resp.StatusCode).NotTo(Equal(http.StatusNotFound))
 		}, NodeTimeout(5*time.Second))
 	})
 
