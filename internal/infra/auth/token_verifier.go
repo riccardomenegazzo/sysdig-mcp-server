@@ -112,6 +112,11 @@ func (v *JWTVerifier) Verify(ctx context.Context, rawToken string) (Principal, e
 		return Principal{}, errors.New("validating access token: missing sub claim")
 	}
 
+	principal := Principal{Issuer: token.Issuer, Subject: token.Subject}
+	if len(v.requiredScopes) == 0 {
+		return principal, nil
+	}
+
 	var claims struct {
 		Scope json.RawMessage `json:"scope"`
 		SCP   json.RawMessage `json:"scp"`
@@ -136,7 +141,7 @@ func (v *JWTVerifier) Verify(ctx context.Context, rawToken string) (Principal, e
 		}
 	}
 
-	return Principal{Issuer: token.Issuer, Subject: token.Subject}, nil
+	return principal, nil
 }
 
 func parseScopeClaim(name string, raw json.RawMessage) ([]string, error) {
