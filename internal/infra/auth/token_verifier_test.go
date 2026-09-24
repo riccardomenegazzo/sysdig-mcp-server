@@ -111,6 +111,15 @@ func TestJWTVerifier(t *testing.T) {
 			requiredScopes:    []string{"mcp:tools"},
 		},
 		{
+			name:              "valid scope array claim",
+			issuer:            testIssuer,
+			audience:          jwt.Audience{testAudience},
+			expiry:            time.Now().Add(time.Hour),
+			claims:            accessTokenClaims{Scope: []string{"mcp:tools", "profile"}},
+			signingAlgorithms: []string{"RS256"},
+			requiredScopes:    []string{"mcp:tools", "profile"},
+		},
+		{
 			name:              "valid scp claim",
 			issuer:            testIssuer,
 			audience:          jwt.Audience{"another-audience", testAudience},
