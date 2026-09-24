@@ -66,9 +66,6 @@ func (c *Config) Validate() error {
 	if c.Transport == "stdio" {
 		return nil
 	}
-	if err := requireSecureURL("SYSDIG_MCP_API_HOST", apiHost); err != nil {
-		return err
-	}
 	if err := validateSecureURL("SYSDIG_MCP_API_HOST", apiHost); err != nil {
 		return err
 	}

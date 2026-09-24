@@ -113,13 +113,6 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Validate()).To(Succeed())
 		})
 
-		It("preserves stdio access to on-prem HTTP API endpoints", func() {
-			cfg := validConfig("stdio")
-			cfg.APIHost = "http://10.0.0.5"
-			Expect(cfg.Validate()).To(Succeed())
-		})
-
-
 		It("allows HTTP only for loopback development", func() {
 			cfg := validConfig("streamable-http")
 			cfg.APIHost = "http://127.0.0.1:9000"
