@@ -30,10 +30,6 @@ type Principal struct {
 	Subject string
 }
 
-func (p Principal) valid() bool {
-	return p.Issuer != "" && p.Subject != ""
-}
-
 // TokenVerifier validates an access token presented to the MCP server and
 // returns the identity that owns any stateful transport session created by the
 // request. Implementations must never forward the token to an upstream service.
