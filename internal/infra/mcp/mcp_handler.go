@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -94,8 +95,13 @@ func (h *Handler) AsStreamableHTTP(mountPath string, stateless bool, security Re
 
 	opts := []server.StreamableHTTPOption{
 		server.WithStreamableHTTPCORS(remoteCORSOptions(security)...),
+		// Legacy protocol sessions are bound to the identity established by
+		// RemoteSecurity. Modern 2026-07-28 requests are sessionless and do not
+		// use this manager.
+		server.WithSessionIdManagerResolver(principalSessionIDManagerResolver{}),
 	}
 	if stateless {
+		// Keep the explicit stateless mode fully sessionless.
 		opts = append(opts, server.WithStateLess(true))
 	}
 
@@ -111,6 +117,13 @@ func (h *Handler) AsSSE(mountPath string, security RemoteSecurity) http.Handler 
 		h.server,
 		server.WithStaticBasePath(mountPath),
 		server.WithSSECORS(remoteCORSOptions(security)...),
+		server.WithSessionIDGenerator(func(ctx context.Context, _ *http.Request) (string, error) {
+			principal, ok := principalFromContext(ctx)
+			if !ok {
+				return "", fmt.Errorf("authenticated principal is unavailable")
+			}
+			return generatePrincipalSessionID(principal)
+		}),
 	)
 	security.mountMetadata(mux)
 	mux.Handle(sseServer.CompleteSsePath(), security.protect(sseServer.SSEHandler()))
@@ -125,11 +138,13 @@ func remoteCORSOptions(security RemoteSecurity) []server.CORSOption {
 		server.WithCORSAllowedHeaders(
 			"Authorization",
 			"Content-Type",
-			"Last-Event-ID",
-			server.HeaderKeyProtocolVersion,
-			server.HeaderKeySessionID,
+			mcp.HeaderLastEventID,
+			mcp.HeaderProtocolVersion,
+			mcp.HeaderSessionID,
+			mcp.HeaderMethod,
+			mcp.HeaderName,
 		),
-		server.WithCORSExposedHeaders(server.HeaderKeySessionID, "WWW-Authenticate"),
+		server.WithCORSExposedHeaders(mcp.HeaderSessionID, "WWW-Authenticate"),
 		server.WithCORSMaxAge(corsMaxAgeSeconds),
 	}
 }

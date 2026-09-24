@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	infraauth "github.com/sysdiglabs/sysdig-mcp-server/internal/infra/auth"
 )
+
+type remotePrincipalContextKey struct{}
 
 type RemoteSecurity struct {
 	verifier           infraauth.TokenVerifier
@@ -70,6 +73,10 @@ func (s RemoteSecurity) protect(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			// Authentication happens outside mcp-go's CORS middleware. Apply the
+			// simple-response headers here as well so browser clients can read
+			// WWW-Authenticate on 401/403 responses.
+			s.applySimpleCORS(w, origin)
 		}
 
 		rawToken, ok := bearerToken(r.Header.Values("Authorization"))
@@ -78,7 +85,8 @@ func (s RemoteSecurity) protect(next http.Handler) http.Handler {
 			return
 		}
 
-		if err := s.verifier.Verify(r.Context(), rawToken); err != nil {
+		principal, err := s.verifier.Verify(r.Context(), rawToken)
+		if err != nil {
 			if errors.Is(err, infraauth.ErrInsufficientScope) {
 				s.writeInsufficientScope(w)
 				return
@@ -87,8 +95,44 @@ func (s RemoteSecurity) protect(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		// Legacy SSE carries the session ID in the message URL. Validate its
+		// owner before mcp-go looks up the session so a leaked URL cannot be
+		// replayed by another authenticated principal.
+		if sessionID := r.URL.Query().Get("sessionId"); sessionID != "" {
+			if err := validatePrincipalSessionID(sessionID, principal); err != nil {
+				http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+				return
+			}
+		}
+
+		ctx := context.WithValue(r.Context(), remotePrincipalContextKey{}, principal)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func principalFromContext(ctx context.Context) (infraauth.Principal, bool) {
+	principal, ok := ctx.Value(remotePrincipalContextKey{}).(infraauth.Principal)
+	return principal, ok && principal.Issuer != "" && principal.Subject != ""
+}
+
+func (s RemoteSecurity) applySimpleCORS(w http.ResponseWriter, origin string) {
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	appendVary(w.Header(), "Origin")
+	w.Header().Set(
+		"Access-Control-Expose-Headers",
+		strings.Join([]string{server.HeaderKeySessionID, "WWW-Authenticate"}, ", "),
+	)
+}
+
+func appendVary(header http.Header, value string) {
+	for _, existing := range header.Values("Vary") {
+		for _, item := range strings.Split(existing, ",") {
+			if strings.EqualFold(strings.TrimSpace(item), value) {
+				return
+			}
+		}
+	}
+	header.Add("Vary", value)
 }
 
 func (s RemoteSecurity) corsOrigins() []string {

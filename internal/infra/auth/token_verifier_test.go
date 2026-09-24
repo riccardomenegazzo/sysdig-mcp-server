@@ -20,11 +20,12 @@ import (
 const (
 	testIssuer   = "https://identity.example.com"
 	testAudience = "https://mcp.example.com/sysdig-mcp-server"
+	testSubject  = "test-user"
 )
 
 type accessTokenClaims struct {
-	Scope string `json:"scope,omitempty"`
-	SCP   any    `json:"scp,omitempty"`
+	Scope any `json:"scope,omitempty"`
+	SCP   any `json:"scp,omitempty"`
 }
 
 func TestJWTVerifier(t *testing.T) {
@@ -68,6 +69,7 @@ func TestJWTVerifier(t *testing.T) {
 		rawToken, err := jwt.Signed(signer).
 			Claims(jwt.Claims{
 				Issuer:   issuer,
+				Subject:  testSubject,
 				Audience: audience,
 				Expiry:   jwt.NewNumericDate(expiry),
 			}).
@@ -96,6 +98,15 @@ func TestJWTVerifier(t *testing.T) {
 			audience:          jwt.Audience{testAudience},
 			expiry:            time.Now().Add(time.Hour),
 			claims:            accessTokenClaims{Scope: "openid mcp:tools"},
+			signingAlgorithms: []string{"RS256"},
+			requiredScopes:    []string{"mcp:tools"},
+		},
+		{
+			name:              "valid array scope claim",
+			issuer:            testIssuer,
+			audience:          jwt.Audience{testAudience},
+			expiry:            time.Now().Add(time.Hour),
+			claims:            accessTokenClaims{Scope: []string{"openid", "mcp:tools"}},
 			signingAlgorithms: []string{"RS256"},
 			requiredScopes:    []string{"mcp:tools"},
 		},
@@ -174,15 +185,20 @@ func TestJWTVerifier(t *testing.T) {
 				test.requiredScopes,
 			)
 
-			err := verifier.Verify(context.Background(), rawToken)
+			principal, err := verifier.Verify(context.Background(), rawToken)
 			if test.wantError && err == nil {
 				t.Fatal("expected token verification to fail")
 			}
 			if test.wantScopeError && !errors.Is(err, infraauth.ErrInsufficientScope) {
 				t.Fatalf("expected insufficient scope error, got: %v", err)
 			}
-			if !test.wantError && err != nil {
-				t.Fatalf("expected token verification to succeed: %v", err)
+			if !test.wantError {
+				if err != nil {
+					t.Fatalf("expected token verification to succeed: %v", err)
+				}
+				if principal.Issuer != testIssuer || principal.Subject != testSubject {
+					t.Fatalf("unexpected principal: %#v", principal)
+				}
 			}
 		})
 	}
@@ -206,7 +222,7 @@ func TestJWTVerifier(t *testing.T) {
 			[]string{"RS256"},
 			nil,
 		)
-		if err := defaultVerifier.Verify(context.Background(), rawToken); err == nil {
+		if _, err := defaultVerifier.Verify(context.Background(), rawToken); err == nil {
 			t.Fatal("expected the default JWKS client to reject the self-signed certificate")
 		}
 
@@ -219,7 +235,7 @@ func TestJWTVerifier(t *testing.T) {
 			nil,
 			tlsServer.Client(),
 		)
-		if err := customVerifier.Verify(context.Background(), rawToken); err != nil {
+		if _, err := customVerifier.Verify(context.Background(), rawToken); err != nil {
 			t.Fatalf("expected custom JWKS HTTP client to be used: %v", err)
 		}
 	})

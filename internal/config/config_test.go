@@ -87,6 +87,19 @@ var _ = Describe("Config", func() {
 			Entry("symmetric signing", func(cfg *config.Config) { cfg.AuthSigningAlgs = []string{"HS256"} }, "asymmetric signing algorithm"),
 		)
 
+
+		It("preserves plaintext non-loopback API hosts for stdio", func() {
+			cfg := validConfig("stdio")
+			cfg.APIHost = "http://10.0.0.5"
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("requires HTTPS for the same API host on remote transports", func() {
+			cfg := validConfig("streamable-http")
+			cfg.APIHost = "http://10.0.0.5"
+			Expect(cfg.Validate()).To(MatchError(ContainSubstring("must use https")))
+		})
+
 		It("allows an API path prefix when it is otherwise safe", func() {
 			cfg := validConfig("streamable-http")
 			cfg.APIHost = "https://gateway.example.com/sysdig-proxy"

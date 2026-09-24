@@ -66,6 +66,9 @@ func (c *Config) Validate() error {
 	if c.Transport == "stdio" {
 		return nil
 	}
+	if err := validateSecureURL("SYSDIG_MCP_API_HOST", apiHost); err != nil {
+		return err
+	}
 
 	if err := validateMountPath(c.MountPath); err != nil {
 		return err
@@ -80,7 +83,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("required configuration missing: SYSDIG_MCP_AUTH_JWKS_URL")
 	}
 
-	resourceURL, err := parseAbsoluteURL("SYSDIG_MCP_RESOURCE_URL", c.ResourceURL)
+	resourceURL, err := parseSecureAbsoluteURL("SYSDIG_MCP_RESOURCE_URL", c.ResourceURL)
 	if err != nil {
 		return err
 	}
@@ -99,14 +102,14 @@ func (c *Config) Validate() error {
 		)
 	}
 
-	authIssuer, err := parseAbsoluteURL("SYSDIG_MCP_AUTH_ISSUER", c.AuthIssuer)
+	authIssuer, err := parseSecureAbsoluteURL("SYSDIG_MCP_AUTH_ISSUER", c.AuthIssuer)
 	if err != nil {
 		return err
 	}
 	if authIssuer.RawQuery != "" {
 		return fmt.Errorf("SYSDIG_MCP_AUTH_ISSUER must not contain a query string")
 	}
-	if _, err := parseAbsoluteURL("SYSDIG_MCP_AUTH_JWKS_URL", c.AuthJWKSURL); err != nil {
+	if _, err := parseSecureAbsoluteURL("SYSDIG_MCP_AUTH_JWKS_URL", c.AuthJWKSURL); err != nil {
 		return err
 	}
 	for _, origin := range c.AllowedOrigins {
@@ -176,10 +179,28 @@ func parseAbsoluteURL(name, rawURL string) (*url.URL, error) {
 	if u.User != nil || u.Fragment != "" {
 		return nil, fmt.Errorf("%s must not contain user information or a fragment", name)
 	}
-	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHostname(u.Hostname())) {
-		return nil, fmt.Errorf("%s must use https (http is allowed only for loopback development)", name)
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("%s must use http or https", name)
 	}
 	return u, nil
+}
+
+func parseSecureAbsoluteURL(name, rawURL string) (*url.URL, error) {
+	u, err := parseAbsoluteURL(name, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSecureURL(name, u); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+func validateSecureURL(name string, u *url.URL) error {
+	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHostname(u.Hostname())) {
+		return fmt.Errorf("%s must use https (http is allowed only for loopback development)", name)
+	}
+	return nil
 }
 
 func validateMountPath(mountPath string) error {
@@ -193,7 +214,7 @@ func validateOrigin(origin string) error {
 	if origin == "*" {
 		return fmt.Errorf("wildcard origins are not allowed")
 	}
-	u, err := parseAbsoluteURL("origin", origin)
+	u, err := parseSecureAbsoluteURL("origin", origin)
 	if err != nil {
 		return err
 	}

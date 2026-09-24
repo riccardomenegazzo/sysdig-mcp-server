@@ -29,6 +29,7 @@ import (
 
 const (
 	validMCPToken = "mcp-access-token"
+	otherMCPToken = "other-mcp-access-token"
 	allowedOrigin = "https://client.example.com"
 	resourceURL   = "https://mcp.example.com/sysdig-mcp-server"
 )
@@ -56,15 +57,19 @@ type fakeTokenVerifier struct {
 	calls      int
 }
 
-func (v *fakeTokenVerifier) Verify(_ context.Context, rawToken string) error {
+func (v *fakeTokenVerifier) Verify(_ context.Context, rawToken string) (infraauth.Principal, error) {
 	v.calls++
 	if rawToken == "insufficient-scope" {
-		return infraauth.ErrInsufficientScope
+		return infraauth.Principal{}, infraauth.ErrInsufficientScope
 	}
-	if rawToken != v.validToken {
-		return errors.New("invalid access token")
+	switch rawToken {
+	case v.validToken:
+		return infraauth.Principal{Issuer: "https://identity.example.com", Subject: "alice"}, nil
+	case otherMCPToken:
+		return infraauth.Principal{Issuer: "https://identity.example.com", Subject: "bob"}, nil
+	default:
+		return infraauth.Principal{}, errors.New("invalid access token")
 	}
-	return nil
 }
 
 func remoteSecurity(verifier *fakeTokenVerifier) localmcp.RemoteSecurity {
@@ -78,7 +83,11 @@ func remoteSecurity(verifier *fakeTokenVerifier) localmcp.RemoteSecurity {
 }
 
 func authorizationHeaders() http.Header {
-	return http.Header{"Authorization": []string{"Bearer " + validMCPToken}}
+	return authorizationHeadersFor(validMCPToken)
+}
+
+func authorizationHeadersFor(token string) http.Header {
+	return http.Header{"Authorization": []string{"Bearer " + token}}
 }
 
 var _ = Describe("McpHandler", func() {
@@ -159,6 +168,15 @@ var _ = Describe("McpHandler", func() {
 			Expect(verifier.calls).To(Equal(2))
 		}, NodeTimeout(5*time.Second))
 
+		It("binds a stateful session to the authenticated principal", func(ctx SpecContext) {
+			testClient.Initialize(ctx, authorizationHeaders())
+			Expect(testClient.sessionID).NotTo(BeEmpty())
+
+			resp := testClient.RPC(ctx, "ping", nil, authorizationHeadersFor(otherMCPToken))
+			defer func() { _ = resp.Body.Close() }()
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+		}, NodeTimeout(5*time.Second))
+
 		DescribeTable("rejects invalid authorization headers",
 			func(headers http.Header) {
 				resp := testClient.RPC(context.Background(), "tools/list", nil, headers)
@@ -177,6 +195,17 @@ var _ = Describe("McpHandler", func() {
 			resp := testClient.RPC(context.Background(), "tools/list", nil, headers)
 			defer func() { _ = resp.Body.Close() }()
 			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+			Expect(resp.Header.Get("WWW-Authenticate")).To(ContainSubstring(`error="invalid_token"`))
+		})
+
+		It("exposes OAuth challenges on allowlisted browser auth failures", func() {
+			headers := http.Header{"Authorization": []string{"Bearer wrong-token"}}
+			headers.Set("Origin", allowedOrigin)
+			resp := testClient.RPC(context.Background(), "tools/list", nil, headers)
+			defer func() { _ = resp.Body.Close() }()
+			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+			Expect(resp.Header.Get("Access-Control-Allow-Origin")).To(Equal(allowedOrigin))
+			Expect(resp.Header.Get("Access-Control-Expose-Headers")).To(ContainSubstring("WWW-Authenticate"))
 			Expect(resp.Header.Get("WWW-Authenticate")).To(ContainSubstring(`error="invalid_token"`))
 		})
 
@@ -231,6 +260,7 @@ var _ = Describe("McpHandler", func() {
 			req := httptest.NewRequest(http.MethodOptions, "/", nil)
 			req.Header.Set("Origin", "https://client.example.com")
 			req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+			req.Header.Set("Access-Control-Request-Headers", mcp.HeaderMethod+", "+mcp.HeaderName)
 			recorder := httptest.NewRecorder()
 			client.handler.ServeHTTP(recorder, req)
 
@@ -248,6 +278,8 @@ var _ = Describe("McpHandler", func() {
 			Expect(recorder.Code).To(Equal(http.StatusNoContent))
 			Expect(recorder.Header().Get("Access-Control-Allow-Origin")).To(Equal(allowedOrigin))
 			Expect(recorder.Header().Get("Access-Control-Allow-Headers")).To(ContainSubstring("Authorization"))
+			Expect(recorder.Header().Get("Access-Control-Allow-Headers")).To(ContainSubstring(mcp.HeaderMethod))
+			Expect(recorder.Header().Get("Access-Control-Allow-Headers")).To(ContainSubstring(mcp.HeaderName))
 			Expect(recorder.Header().Get("Access-Control-Max-Age")).To(Equal("600"))
 			Expect(verifier.calls).To(BeZero())
 		})
@@ -297,7 +329,7 @@ var _ = Describe("McpHandler", func() {
 			Expect(upstreamAuthorization).NotTo(ContainSubstring(validMCPToken))
 		}, NodeTimeout(5*time.Second))
 
-		It("routes the protected SSE message endpoint and preserves exact-origin CORS", func() {
+		It("rejects an unbound SSE session ID while preserving exact-origin CORS", func() {
 			sseHandler := handler.AsSSE("/sysdig-mcp-server", remoteSecurity(verifier))
 			req := httptest.NewRequest(
 				http.MethodPost,
@@ -310,7 +342,7 @@ var _ = Describe("McpHandler", func() {
 			recorder := httptest.NewRecorder()
 			sseHandler.ServeHTTP(recorder, req)
 
-			Expect(recorder.Code).NotTo(Equal(http.StatusNotFound))
+			Expect(recorder.Code).To(Equal(http.StatusNotFound))
 			Expect(recorder.Header().Get("Access-Control-Allow-Origin")).To(Equal(allowedOrigin))
 			Expect(recorder.Header().Get("Access-Control-Allow-Origin")).NotTo(Equal("*"))
 			Expect(verifier.calls).To(Equal(1))
