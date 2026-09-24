@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	mcpprotocol "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	infraauth "github.com/sysdiglabs/sysdig-mcp-server/internal/infra/auth"
 )
@@ -57,7 +58,7 @@ func NewRemoteSecurity(
 	}
 }
 
-func (s RemoteSecurity) protect(next http.Handler) http.Handler {
+func (s RemoteSecurity) protect(next http.Handler, bindSessions bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin, hasOrigin, ok := requestOrigin(r.Header.Values("Origin"))
 		if !ok {
@@ -95,11 +96,13 @@ func (s RemoteSecurity) protect(next http.Handler) http.Handler {
 			return
 		}
 
-		if err := validateRequestSessionOwner(r, principal); err != nil {
-			// mcp-go uses 404 for an unknown/invalid session. Preserve that
-			// behavior instead of exposing whether a leaked session exists.
-			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-			return
+		if bindSessions {
+			if err := validateRequestSessionOwner(r, principal); err != nil {
+				// mcp-go uses 404 for an unknown/invalid session. Preserve that
+				// behavior instead of exposing whether a leaked session exists.
+				http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+				return
+			}
 		}
 
 		ctx := context.WithValue(r.Context(), principalContextKey{}, principal)
@@ -206,9 +209,14 @@ func principalFromContext(ctx context.Context) (infraauth.Principal, bool) {
 }
 
 func validateRequestSessionOwner(r *http.Request, principal infraauth.Principal) error {
-	if sessionID := r.Header.Get(server.HeaderKeySessionID); sessionID != "" {
-		if err := validatePrincipalSessionID(sessionID, principal); err != nil {
-			return err
+	// Protocol 2026-07-28 removed protocol-level sessions. Match mcp-go and
+	// ignore a stale Mcp-Session-Id rather than applying legacy ownership
+	// semantics to a modern request.
+	if r.Header.Get(mcpprotocol.HeaderProtocolVersion) != mcpprotocol.ProtocolVersion20260728 {
+		if sessionID := r.Header.Get(mcpprotocol.HeaderSessionID); sessionID != "" {
+			if err := validatePrincipalSessionID(sessionID, principal); err != nil {
+				return err
+			}
 		}
 	}
 	if sessionID := r.URL.Query().Get("sessionId"); sessionID != "" {
