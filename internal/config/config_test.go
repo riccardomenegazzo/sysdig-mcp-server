@@ -72,6 +72,7 @@ var _ = Describe("Config", func() {
 				Expect(cfg.Validate()).To(MatchError(ContainSubstring(expected)))
 			},
 			Entry("relative API host", func(cfg *config.Config) { cfg.APIHost = "app.example.com" }, "absolute URL"),
+			Entry("plaintext remote API host", func(cfg *config.Config) { cfg.APIHost = "http://10.0.0.5" }, "must use https"),
 			Entry("API host query", func(cfg *config.Config) { cfg.APIHost += "?tenant=one" }, "query string"),
 			Entry("plaintext resource", func(cfg *config.Config) { cfg.ResourceURL = "http://mcp.example.com/sysdig-mcp-server" }, "must use https"),
 			Entry("resource query", func(cfg *config.Config) { cfg.ResourceURL += "?tenant=one" }, "query string"),
@@ -111,6 +112,13 @@ var _ = Describe("Config", func() {
 			cfg.AuthJWKSURL = "https://identity.example.com/jwks?tenant=one"
 			Expect(cfg.Validate()).To(Succeed())
 		})
+
+		It("preserves stdio access to on-prem HTTP API endpoints", func() {
+			cfg := validConfig("stdio")
+			cfg.APIHost = "http://10.0.0.5"
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
 
 		It("allows HTTP only for loopback development", func() {
 			cfg := validConfig("streamable-http")
