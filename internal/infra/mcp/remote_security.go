@@ -2,6 +2,9 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,7 +15,13 @@ import (
 	infraauth "github.com/sysdiglabs/sysdig-mcp-server/internal/infra/auth"
 )
 
-type remotePrincipalContextKey struct{}
+const (
+	sessionIDPrefix          = "mcp-session-"
+	principalFingerprintSize = 16
+	sessionNonceSize         = 16
+)
+
+type principalContextKey struct{}
 
 type RemoteSecurity struct {
 	verifier           infraauth.TokenVerifier
@@ -73,10 +82,7 @@ func (s RemoteSecurity) protect(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Authentication happens outside mcp-go's CORS middleware. Apply the
-			// simple-response headers here as well so browser clients can read
-			// WWW-Authenticate on 401/403 responses.
-			s.applySimpleCORS(w, origin)
+			applyAuthCORSHeaders(w, origin)
 		}
 
 		rawToken, ok := bearerToken(r.Header.Values("Authorization"))
@@ -95,48 +101,30 @@ func (s RemoteSecurity) protect(next http.Handler) http.Handler {
 			return
 		}
 
-		// Legacy SSE carries the session ID in the message URL. Validate its
-		// owner before mcp-go looks up the session so a leaked URL cannot be
-		// replayed by another authenticated principal.
-		if sessionID := r.URL.Query().Get("sessionId"); sessionID != "" {
-			if err := validatePrincipalSessionID(sessionID, principal); err != nil {
-				http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-				return
-			}
+		if err := validateRequestSessionOwner(r, principal); err != nil {
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
 		}
 
-		ctx := context.WithValue(r.Context(), remotePrincipalContextKey{}, principal)
+		ctx := context.WithValue(r.Context(), principalContextKey{}, principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-func principalFromContext(ctx context.Context) (infraauth.Principal, bool) {
-	principal, ok := ctx.Value(remotePrincipalContextKey{}).(infraauth.Principal)
-	return principal, ok && principal.Issuer != "" && principal.Subject != ""
-}
-
-func (s RemoteSecurity) applySimpleCORS(w http.ResponseWriter, origin string) {
-	w.Header().Set("Access-Control-Allow-Origin", origin)
-	appendVary(w.Header(), "Origin")
-	w.Header().Set(
-		"Access-Control-Expose-Headers",
-		strings.Join([]string{server.HeaderKeySessionID, "WWW-Authenticate"}, ", "),
-	)
-}
-
-func appendVary(header http.Header, value string) {
-	for _, existing := range header.Values("Vary") {
-		for _, item := range strings.Split(existing, ",") {
-			if strings.EqualFold(strings.TrimSpace(item), value) {
-				return
-			}
-		}
-	}
-	header.Add("Vary", value)
-}
-
 func (s RemoteSecurity) corsOrigins() []string {
 	return append([]string(nil), s.corsAllowedOrigins...)
+}
+
+func (s RemoteSecurity) sessionIDManagerResolver() server.SessionIdManagerResolver {
+	return principalSessionResolver{}
+}
+
+func (s RemoteSecurity) newSessionID(ctx context.Context) (string, error) {
+	principal, ok := principalFromContext(ctx)
+	if !ok {
+		return "", errors.New("verified principal missing from request context")
+	}
+	return generatePrincipalSessionID(principal)
 }
 
 func (s RemoteSecurity) writeInsufficientScope(w http.ResponseWriter) {
@@ -160,6 +148,12 @@ func (s RemoteSecurity) writeUnauthorized(w http.ResponseWriter, authError strin
 	}
 	w.Header().Set("WWW-Authenticate", challenge)
 	http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+}
+
+func applyAuthCORSHeaders(w http.ResponseWriter, origin string) {
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Add("Vary", "Origin")
+	w.Header().Set("Access-Control-Expose-Headers", server.HeaderKeySessionID+", WWW-Authenticate")
 }
 
 func requestOrigin(values []string) (origin string, present bool, ok bool) {
@@ -209,4 +203,108 @@ func protectedResourceMetadataURL(resource string) string {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String()
+}
+
+func principalFromContext(ctx context.Context) (infraauth.Principal, bool) {
+	principal, ok := ctx.Value(principalContextKey{}).(infraauth.Principal)
+	return principal, ok && principal.Issuer != "" && principal.Subject != ""
+}
+
+func principalFingerprint(principal infraauth.Principal) string {
+	sum := sha256.Sum256([]byte(principal.Issuer + "\x00" + principal.Subject))
+	return hex.EncodeToString(sum[:principalFingerprintSize])
+}
+
+func generatePrincipalSessionID(principal infraauth.Principal) (string, error) {
+	nonce := make([]byte, sessionNonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("generating MCP session ID: %w", err)
+	}
+	return sessionIDPrefix + principalFingerprint(principal) + "-" + hex.EncodeToString(nonce), nil
+}
+
+func sessionPrincipalFingerprint(sessionID string) (string, bool) {
+	if !strings.HasPrefix(sessionID, sessionIDPrefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(sessionID, sessionIDPrefix)
+	parts := strings.SplitN(rest, "-", 2)
+	if len(parts) != 2 ||
+		len(parts[0]) != principalFingerprintSize*2 ||
+		len(parts[1]) != sessionNonceSize*2 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(parts[0]); err != nil {
+		return "", false
+	}
+	if _, err := hex.DecodeString(parts[1]); err != nil {
+		return "", false
+	}
+	return parts[0], true
+}
+
+func validateSessionOwner(sessionID string, principal infraauth.Principal) error {
+	fingerprint, ok := sessionPrincipalFingerprint(sessionID)
+	if !ok {
+		return errors.New("invalid MCP session ID")
+	}
+	if fingerprint != principalFingerprint(principal) {
+		return errors.New("MCP session belongs to a different principal")
+	}
+	return nil
+}
+
+func validateRequestSessionOwner(r *http.Request, principal infraauth.Principal) error {
+	if sessionID := r.Header.Get(server.HeaderKeySessionID); sessionID != "" {
+		if err := validateSessionOwner(sessionID, principal); err != nil {
+			return err
+		}
+	}
+	if sessionID := r.URL.Query().Get("sessionId"); sessionID != "" {
+		if err := validateSessionOwner(sessionID, principal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type principalSessionResolver struct{}
+
+func (principalSessionResolver) ResolveSessionIdManager(r *http.Request) server.SessionIdManager {
+	if r == nil {
+		return principalSessionManager{}
+	}
+	principal, _ := principalFromContext(r.Context())
+	return principalSessionManager{fingerprint: principalFingerprint(principal)}
+}
+
+type principalSessionManager struct {
+	fingerprint string
+}
+
+func (m principalSessionManager) Generate() string {
+	if m.fingerprint == "" {
+		return ""
+	}
+	nonce := make([]byte, sessionNonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return ""
+	}
+	return sessionIDPrefix + m.fingerprint + "-" + hex.EncodeToString(nonce)
+}
+
+func (m principalSessionManager) Validate(sessionID string) (bool, error) {
+	fingerprint, ok := sessionPrincipalFingerprint(sessionID)
+	if !ok {
+		return false, errors.New("invalid MCP session ID")
+	}
+	if m.fingerprint != "" && fingerprint != m.fingerprint {
+		return false, errors.New("MCP session belongs to a different principal")
+	}
+	return false, nil
+}
+
+func (m principalSessionManager) Terminate(sessionID string) (bool, error) {
+	_, err := m.Validate(sessionID)
+	return false, err
 }
