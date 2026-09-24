@@ -107,7 +107,7 @@ func (h *Handler) AsStreamableHTTP(mountPath string, stateless bool, security Re
 
 	httpServer := server.NewStreamableHTTPServer(h.server, opts...)
 	security.mountMetadata(mux)
-	mux.Handle(mountPath, security.protect(httpServer))
+	mux.Handle(mountPath, security.protect(httpServer, !stateless))
 	return mux
 }
 
@@ -126,8 +126,8 @@ func (h *Handler) AsSSE(mountPath string, security RemoteSecurity) http.Handler 
 		}),
 	)
 	security.mountMetadata(mux)
-	mux.Handle(sseServer.CompleteSsePath(), security.protect(sseServer.SSEHandler()))
-	mux.Handle(sseServer.CompleteMessagePath(), security.protect(sseServer.MessageHandler()))
+	mux.Handle(sseServer.CompleteSsePath(), security.protect(sseServer.SSEHandler(), true))
+	mux.Handle(sseServer.CompleteMessagePath(), security.protect(sseServer.MessageHandler(), true))
 	return mux
 }
 
