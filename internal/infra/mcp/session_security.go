@@ -41,11 +41,15 @@ func (m *principalSessionIDManager) Generate() string {
 }
 
 func (m *principalSessionIDManager) Validate(sessionID string) (bool, error) {
+	if m.principal.Issuer == "" || m.principal.Subject == "" {
+		_, err := parsePrincipalSessionID(sessionID)
+		return false, err
+	}
 	return false, validatePrincipalSessionID(sessionID, m.principal)
 }
 
 func (m *principalSessionIDManager) Terminate(sessionID string) (bool, error) {
-	return false, validatePrincipalSessionID(sessionID, m.principal)
+	return m.Validate(sessionID)
 }
 
 func generatePrincipalSessionID(principal infraauth.Principal) (string, error) {
@@ -64,16 +68,9 @@ func validatePrincipalSessionID(sessionID string, principal infraauth.Principal)
 	if principal.Issuer == "" || principal.Subject == "" {
 		return errors.New("authenticated principal is unavailable")
 	}
-	if !strings.HasPrefix(sessionID, principalSessionPrefix) {
-		return errors.New("invalid session ID")
-	}
-	encoded, fingerprint, ok := strings.Cut(strings.TrimPrefix(sessionID, principalSessionPrefix), ".")
-	if !ok || encoded == "" || fingerprint == "" || strings.Contains(fingerprint, ".") {
-		return errors.New("invalid session ID")
-	}
-	nonce, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil || len(nonce) != 18 {
-		return errors.New("invalid session ID")
+	fingerprint, err := parsePrincipalSessionID(sessionID)
+	if err != nil {
+		return err
 	}
 
 	expected := principalFingerprint(principal)
@@ -82,6 +79,21 @@ func validatePrincipalSessionID(sessionID string, principal infraauth.Principal)
 		return errors.New("session ID belongs to a different principal")
 	}
 	return nil
+}
+
+func parsePrincipalSessionID(sessionID string) (string, error) {
+	if !strings.HasPrefix(sessionID, principalSessionPrefix) {
+		return "", errors.New("invalid session ID")
+	}
+	encoded, fingerprint, ok := strings.Cut(strings.TrimPrefix(sessionID, principalSessionPrefix), ".")
+	if !ok || encoded == "" || fingerprint == "" || strings.Contains(fingerprint, ".") {
+		return "", errors.New("invalid session ID")
+	}
+	nonce, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(nonce) != 18 {
+		return "", errors.New("invalid session ID")
+	}
+	return fingerprint, nil
 }
 
 func principalFingerprint(principal infraauth.Principal) string {
