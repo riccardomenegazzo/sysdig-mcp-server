@@ -274,7 +274,10 @@ func (principalSessionResolver) ResolveSessionIdManager(r *http.Request) server.
 	if r == nil {
 		return principalSessionManager{}
 	}
-	principal, _ := principalFromContext(r.Context())
+	principal, ok := principalFromContext(r.Context())
+	if !ok {
+		return principalSessionManager{}
+	}
 	return principalSessionManager{fingerprint: principalFingerprint(principal)}
 }
 
