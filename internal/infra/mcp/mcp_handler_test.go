@@ -167,6 +167,15 @@ var _ = Describe("McpHandler", func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 			Expect(verifier.calls).To(Equal(2))
 		}, NodeTimeout(5*time.Second))
+		It("rejects reuse of a session by a different valid principal", func(ctx SpecContext) {
+			testClient.Initialize(ctx, authorizationHeaders())
+
+			resp := testClient.ListTools(ctx, tokenHeaders(otherMCPToken))
+			defer func() { _ = resp.Body.Close() }()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+		}, NodeTimeout(5*time.Second))
+
 
 		It("binds a stateful session to the authenticated principal", func(ctx SpecContext) {
 			testClient.Initialize(ctx, authorizationHeaders())
@@ -197,6 +206,18 @@ var _ = Describe("McpHandler", func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 			Expect(resp.Header.Get("WWW-Authenticate")).To(ContainSubstring(`error="invalid_token"`))
 		})
+		It("keeps OAuth discovery headers visible on browser auth failures", func() {
+			headers := tokenHeaders("wrong-token")
+			headers.Set("Origin", allowedOrigin)
+			resp := testClient.RPC(context.Background(), "tools/list", nil, headers)
+			defer func() { _ = resp.Body.Close() }()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+			Expect(resp.Header.Get("Access-Control-Allow-Origin")).To(Equal(allowedOrigin))
+			Expect(resp.Header.Get("Access-Control-Expose-Headers")).To(ContainSubstring("WWW-Authenticate"))
+			Expect(resp.Header.Get("WWW-Authenticate")).To(ContainSubstring(`error="invalid_token"`))
+		})
+
 
 		It("exposes OAuth challenges on allowlisted browser auth failures", func() {
 			headers := http.Header{"Authorization": []string{"Bearer wrong-token"}}
