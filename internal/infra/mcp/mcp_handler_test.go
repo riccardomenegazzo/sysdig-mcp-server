@@ -186,7 +186,7 @@ var _ = Describe("McpHandler", func() {
 			resp := modernClient.RPC(ctx, "ping", nil, headers)
 			defer func() { _ = resp.Body.Close() }()
 
-			Expect(resp.StatusCode).NotTo(Equal(http.StatusNotFound))
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 		}, NodeTimeout(5*time.Second))
 
 		DescribeTable("rejects invalid authorization headers",
@@ -395,7 +395,7 @@ var _ = Describe("McpHandler", func() {
 			resp := statelessClient.RPC(ctx, "ping", nil, headers)
 			defer func() { _ = resp.Body.Close() }()
 
-			Expect(resp.StatusCode).NotTo(Equal(http.StatusNotFound))
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 		}, NodeTimeout(5*time.Second))
 	})
 
